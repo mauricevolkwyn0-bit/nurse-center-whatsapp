@@ -1,4 +1,4 @@
-import { supabase } from '../config/supabase';
+import { getSupabase } from '../config/supabase';
 import { IRepository } from './base.repository';
 import { Job, JobStatus, CareType } from '../domain/job.types';
 
@@ -10,8 +10,6 @@ export interface IJobRepository extends IRepository<Job> {
 
 const CARE_TYPE_VALUES: CareType[] = ['general', 'palliative', 'paediatric', 'icu', 'other'];
 
-// CareType is stored as a "careType:<value>" prefix in the bookings.notes column
-// so it survives alongside any human-written notes.
 function encodeCareType(careType: CareType): string {
   return `careType:${careType}`;
 }
@@ -25,10 +23,10 @@ function decodeCareType(notes: string | null): CareType {
 
 function statusToBooking(status: JobStatus): string {
   switch (status) {
-    case 'open':       return 'pending';
-    case 'accepted':   return 'confirmed';
-    case 'filled':     return 'completed';
-    case 'cancelled':  return 'cancelled';
+    case 'open':      return 'pending';
+    case 'accepted':  return 'confirmed';
+    case 'filled':    return 'completed';
+    case 'cancelled': return 'cancelled';
   }
 }
 
@@ -75,59 +73,59 @@ function rowToJob(row: BookingRow): Job {
 
 export class SupabaseJobRepository implements IJobRepository {
   async findById(id: string): Promise<Job | null> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('bookings')
       .select(BOOKING_COLS)
       .eq('id', id)
       .is('deleted_at', null)
       .maybeSingle();
     if (!data) return null;
-    return rowToJob(data as BookingRow);
+    return rowToJob(data as unknown as BookingRow);
   }
 
   async findAll(): Promise<Job[]> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('bookings')
       .select(BOOKING_COLS)
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as BookingRow[]).map(rowToJob);
+    return (data as unknown as BookingRow[]).map(rowToJob);
   }
 
   async create(data: Omit<Job, 'id'>): Promise<Job> {
-    const { data: booking, error } = await supabase
+    const { data: booking, error } = await getSupabase()
       .from('bookings')
       .insert({
-        patient_id:    data.clientId,
-        caregiver_id:  data.acceptedByNurseId ?? null,
-        status:        statusToBooking(data.status),
-        location_name: data.location,
-        scheduled_at:  data.date,
+        patient_id:     data.clientId,
+        caregiver_id:   data.acceptedByNurseId ?? null,
+        status:         statusToBooking(data.status),
+        location_name:  data.location,
+        scheduled_at:   data.date,
         duration_hours: data.durationHours,
-        notes:         encodeCareType(data.careType),
+        notes:          encodeCareType(data.careType),
       })
       .select(BOOKING_COLS)
       .single();
     if (error) throw error;
-    return rowToJob(booking as BookingRow);
+    return rowToJob(booking as unknown as BookingRow);
   }
 
   async update(id: string, data: Partial<Job>): Promise<Job | null> {
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    if (data.status !== undefined)           updates.status        = statusToBooking(data.status);
-    if (data.location !== undefined)         updates.location_name = data.location;
-    if (data.date !== undefined)             updates.scheduled_at  = data.date;
-    if (data.durationHours !== undefined)    updates.duration_hours = data.durationHours;
-    if (data.acceptedByNurseId !== undefined) updates.caregiver_id  = data.acceptedByNurseId;
-    if (data.careType !== undefined)         updates.notes         = encodeCareType(data.careType);
+    if (data.status !== undefined)            updates.status         = statusToBooking(data.status);
+    if (data.location !== undefined)          updates.location_name  = data.location;
+    if (data.date !== undefined)              updates.scheduled_at   = data.date;
+    if (data.durationHours !== undefined)     updates.duration_hours = data.durationHours;
+    if (data.acceptedByNurseId !== undefined) updates.caregiver_id   = data.acceptedByNurseId;
+    if (data.careType !== undefined)          updates.notes          = encodeCareType(data.careType);
 
-    const { error } = await supabase.from('bookings').update(updates).eq('id', id);
+    const { error } = await getSupabase().from('bookings').update(updates).eq('id', id);
     if (error) return null;
     return this.findById(id);
   }
 
   async delete(id: string): Promise<boolean> {
-    const { error } = await supabase
+    const { error } = await getSupabase()
       .from('bookings')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', id);
@@ -135,34 +133,34 @@ export class SupabaseJobRepository implements IJobRepository {
   }
 
   async findByStatus(status: JobStatus): Promise<Job[]> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('bookings')
       .select(BOOKING_COLS)
       .eq('status', statusToBooking(status))
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as BookingRow[]).map(rowToJob);
+    return (data as unknown as BookingRow[]).map(rowToJob);
   }
 
   async findByClientId(clientId: string): Promise<Job[]> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('bookings')
       .select(BOOKING_COLS)
       .eq('patient_id', clientId)
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as BookingRow[]).map(rowToJob);
+    return (data as unknown as BookingRow[]).map(rowToJob);
   }
 
   async findOpenByLocation(location: string): Promise<Job[]> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('bookings')
       .select(BOOKING_COLS)
       .eq('status', 'pending')
       .ilike('location_name', `%${location}%`)
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as BookingRow[]).map(rowToJob);
+    return (data as unknown as BookingRow[]).map(rowToJob);
   }
 }
 

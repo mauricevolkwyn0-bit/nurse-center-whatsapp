@@ -2,8 +2,11 @@ import { Router, Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import config from '../config';
 import logger from '../utils/logger';
+import { whatsappService } from '../services/whatsapp.service';
 
 const router = Router();
+
+const GREETING_WORDS = ['hi', 'hello', 'hey', 'howzit', 'hola', 'good morning', 'good afternoon', 'good evening'];
 
 // Meta sends a GET to verify the webhook — respond with the challenge token
 router.get('/', (req: Request, res: Response) => {
@@ -24,13 +27,47 @@ router.get('/', (req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
 
-  if (body.object === 'whatsapp_business_account') {
-    logger.info('WhatsApp webhook event received', { body: JSON.stringify(body) });
-    // TODO: route to flow handler
-    res.sendStatus(StatusCodes.OK);
-  } else {
+  if (body.object !== 'whatsapp_business_account') {
     res.sendStatus(StatusCodes.NOT_FOUND);
+    return;
   }
+
+  // Acknowledge immediately — Meta requires a 200 within 20 seconds
+  res.sendStatus(StatusCodes.OK);
+
+  void handleIncoming(body);
 });
+
+async function handleIncoming(body: Record<string, unknown>): Promise<void> {
+  try {
+    const entry = (body.entry as { changes: { value: { messages?: { from: string; type: string; text?: { body: string }; id: string }[] } }[] }[] | undefined)?.[0];
+    const value = entry?.changes?.[0]?.value;
+    const messages = value?.messages;
+
+    if (!messages?.length) return;
+
+    for (const msg of messages) {
+      const from = msg.from;
+      const text = msg.type === 'text' ? msg.text?.body?.trim().toLowerCase() ?? '' : '';
+
+      logger.info('Incoming message', { from, text });
+
+      if (GREETING_WORDS.some((w) => text.startsWith(w))) {
+        await whatsappService.sendInteractiveButtons({
+          to: from,
+          headerText: 'Welcome to Nurse Center 👋',
+          bodyText: 'Hello! I\'m the Nurse Center assistant. How can I help you today?',
+          buttons: [
+            { id: 'nurse_signup', title: 'Register as Nurse' },
+            { id: 'client_request', title: 'Request a Nurse' },
+            { id: 'learn_more', title: 'Learn More' },
+          ],
+        });
+      }
+    }
+  } catch (err) {
+    logger.error('Error handling incoming WhatsApp message', { err });
+  }
+}
 
 export default router;

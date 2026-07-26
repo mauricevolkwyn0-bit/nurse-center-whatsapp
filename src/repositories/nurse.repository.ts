@@ -1,4 +1,4 @@
-import { supabase } from '../config/supabase';
+import { getSupabase } from '../config/supabase';
 import { IRepository } from './base.repository';
 import { Nurse, NurseStatus } from '../domain/nurse.types';
 
@@ -75,7 +75,7 @@ function rowToNurse(row: NurseRow): Nurse {
 
 export class SupabaseNurseRepository implements INurseRepository {
   async findById(id: string): Promise<Nurse | null> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('profiles')
       .select(NURSE_SELECT)
       .eq('id', id)
@@ -83,36 +83,36 @@ export class SupabaseNurseRepository implements INurseRepository {
       .is('deleted_at', null)
       .maybeSingle();
     if (!data) return null;
-    return rowToNurse(data as NurseRow);
+    return rowToNurse(data as unknown as NurseRow);
   }
 
   async findAll(): Promise<Nurse[]> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('profiles')
       .select(NURSE_SELECT)
       .eq('role', 'caregiver')
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as NurseRow[]).map(rowToNurse);
+    return (data as unknown as NurseRow[]).map(rowToNurse);
   }
 
   async create(data: Omit<Nurse, 'id'>): Promise<Nurse> {
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    const sb = getSupabase();
+    const { data: authData, error: authError } = await sb.auth.admin.createUser({
       phone: data.whatsappNumber,
       phone_confirm: true,
     });
 
     let userId: string;
     if (authError) {
-      // User already exists — look up their ID via profiles_private
-      const { data: ppRows } = await supabase
+      const { data: ppRows } = await sb
         .from('profiles_private')
         .select('id')
         .eq('phone', data.whatsappNumber)
         .limit(1);
       const existing = ppRows?.[0];
       if (!existing?.id) throw new Error(authError.message);
-      userId = existing.id;
+      userId = existing.id as string;
     } else {
       userId = authData.user.id;
     }
@@ -120,27 +120,12 @@ export class SupabaseNurseRepository implements INurseRepository {
     const fullName = `${data.firstName} ${data.lastName}`.trim();
 
     const [profileErr, privateErr, cgErr] = await Promise.all([
-      supabase
-        .from('profiles')
-        .upsert({ id: userId, role: 'caregiver', full_name: fullName }, { onConflict: 'id' })
-        .then((r) => r.error),
-      supabase
-        .from('profiles_private')
-        .upsert({ id: userId, phone: data.whatsappNumber, id_number: data.idNumber }, { onConflict: 'id' })
-        .then((r) => r.error),
-      supabase
-        .from('caregiver_profiles')
-        .upsert(
-          {
-            id: userId,
-            qualification_type: mapQualification(data.qualifications),
-            sanc_number: data.registrationNumber,
-            service_area: data.location,
-            verification_status: statusToVerification(data.status ?? 'pending'),
-          },
-          { onConflict: 'id' },
-        )
-        .then((r) => r.error),
+      sb.from('profiles').upsert({ id: userId, role: 'caregiver', full_name: fullName }, { onConflict: 'id' }).then((r) => r.error),
+      sb.from('profiles_private').upsert({ id: userId, phone: data.whatsappNumber, id_number: data.idNumber }, { onConflict: 'id' }).then((r) => r.error),
+      sb.from('caregiver_profiles').upsert(
+        { id: userId, qualification_type: mapQualification(data.qualifications), sanc_number: data.registrationNumber, service_area: data.location, verification_status: statusToVerification(data.status ?? 'pending') },
+        { onConflict: 'id' },
+      ).then((r) => r.error),
     ]);
 
     if (profileErr) throw profileErr;
@@ -153,20 +138,21 @@ export class SupabaseNurseRepository implements INurseRepository {
   }
 
   async update(id: string, data: Partial<Nurse>): Promise<Nurse | null> {
+    const sb = getSupabase();
     const now = new Date().toISOString();
 
     if (data.firstName !== undefined || data.lastName !== undefined) {
       const current = await this.findById(id);
       if (!current) return null;
       const fullName = `${data.firstName ?? current.firstName} ${data.lastName ?? current.lastName}`.trim();
-      await supabase.from('profiles').update({ full_name: fullName, updated_at: now }).eq('id', id);
+      await sb.from('profiles').update({ full_name: fullName, updated_at: now }).eq('id', id);
     }
 
     if (data.whatsappNumber !== undefined || data.idNumber !== undefined) {
       const privateUpdate: Record<string, string> = { id };
       if (data.whatsappNumber !== undefined) privateUpdate.phone = data.whatsappNumber;
       if (data.idNumber !== undefined) privateUpdate.id_number = data.idNumber;
-      await supabase.from('profiles_private').upsert(privateUpdate, { onConflict: 'id' });
+      await sb.from('profiles_private').upsert(privateUpdate, { onConflict: 'id' });
     }
 
     const cgUpdate: Record<string, string> = {};
@@ -176,66 +162,69 @@ export class SupabaseNurseRepository implements INurseRepository {
     if (data.status !== undefined) cgUpdate.verification_status = statusToVerification(data.status);
     if (Object.keys(cgUpdate).length > 0) {
       cgUpdate.updated_at = now;
-      await supabase.from('caregiver_profiles').update(cgUpdate).eq('id', id);
+      await sb.from('caregiver_profiles').update(cgUpdate).eq('id', id);
     }
 
     return this.findById(id);
   }
 
   async delete(id: string): Promise<boolean> {
+    const sb = getSupabase();
     const now = new Date().toISOString();
     const [{ error: pe }, { error: ce }] = await Promise.all([
-      supabase.from('profiles').update({ deleted_at: now }).eq('id', id),
-      supabase.from('caregiver_profiles').update({ deleted_at: now }).eq('id', id),
+      sb.from('profiles').update({ deleted_at: now }).eq('id', id),
+      sb.from('caregiver_profiles').update({ deleted_at: now }).eq('id', id),
     ]);
     return !pe && !ce;
   }
 
   async findByWhatsappNumber(number: string): Promise<Nurse | null> {
-    const { data: ppRows } = await supabase
+    const { data: ppRows } = await getSupabase()
       .from('profiles_private')
       .select('id')
       .eq('phone', number)
       .limit(1);
-    const id = ppRows?.[0]?.id;
+    const id = (ppRows?.[0] as { id?: string } | undefined)?.id;
     if (!id) return null;
     return this.findById(id);
   }
 
   async findByLocation(location: string): Promise<Nurse[]> {
-    const { data: cgRows } = await supabase
+    const sb = getSupabase();
+    const { data: cgRows } = await sb
       .from('caregiver_profiles')
       .select('id')
       .ilike('service_area', `%${location}%`)
       .is('deleted_at', null);
     if (!cgRows?.length) return [];
 
-    const { data } = await supabase
+    const { data } = await sb
       .from('profiles')
       .select(NURSE_SELECT)
-      .in('id', cgRows.map((r) => r.id))
+      .in('id', (cgRows as { id: string }[]).map((r) => r.id))
       .eq('role', 'caregiver')
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as NurseRow[]).map(rowToNurse);
+    return (data as unknown as NurseRow[]).map(rowToNurse);
   }
 
   async findActive(): Promise<Nurse[]> {
-    const { data: cgRows } = await supabase
+    const sb = getSupabase();
+    const { data: cgRows } = await sb
       .from('caregiver_profiles')
       .select('id')
       .eq('verification_status', 'verified')
       .is('deleted_at', null);
     if (!cgRows?.length) return [];
 
-    const { data } = await supabase
+    const { data } = await sb
       .from('profiles')
       .select(NURSE_SELECT)
-      .in('id', cgRows.map((r) => r.id))
+      .in('id', (cgRows as { id: string }[]).map((r) => r.id))
       .eq('role', 'caregiver')
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as NurseRow[]).map(rowToNurse);
+    return (data as unknown as NurseRow[]).map(rowToNurse);
   }
 }
 

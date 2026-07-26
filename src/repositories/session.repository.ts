@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { supabase } from '../config/supabase';
+import { getSupabase } from '../config/supabase';
 import { ConversationSession, FlowId, FlowStep } from '../domain/session.types';
 
 export interface ISessionRepository {
@@ -38,14 +38,14 @@ function rowToSession(row: SessionRow): ConversationSession {
 
 export class SupabaseSessionRepository implements ISessionRepository {
   async findByWhatsappNumber(number: string): Promise<ConversationSession | null> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('whatsapp_sessions')
       .select('*')
       .eq('whatsapp_number', number)
       .gt('expires_at', new Date().toISOString())
       .maybeSingle();
     if (!data) return null;
-    return rowToSession(data as SessionRow);
+    return rowToSession(data as unknown as SessionRow);
   }
 
   async upsert(session: ConversationSession): Promise<ConversationSession> {
@@ -61,17 +61,17 @@ export class SupabaseSessionRepository implements ISessionRepository {
       expires_at: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('whatsapp_sessions')
       .upsert(row, { onConflict: 'whatsapp_number' })
       .select('*')
       .single();
     if (error) throw error;
-    return rowToSession(data as SessionRow);
+    return rowToSession(data as unknown as SessionRow);
   }
 
   async delete(whatsappNumber: string): Promise<boolean> {
-    const { error } = await supabase
+    const { error } = await getSupabase()
       .from('whatsapp_sessions')
       .delete()
       .eq('whatsapp_number', whatsappNumber);

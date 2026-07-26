@@ -1,4 +1,4 @@
-import { supabase } from '../config/supabase';
+import { getSupabase } from '../config/supabase';
 import { IRepository } from './base.repository';
 import { Client } from '../domain/client.types';
 
@@ -23,12 +23,11 @@ const CLIENT_SELECT = `
 
 function rowToClient(row: ClientRow): Client {
   const pp = row.profiles_private[0];
-  const addrs = row.patient_addresses;
   return {
     id: row.id,
     whatsappNumber: pp?.phone ?? '',
     name: row.full_name,
-    location: addrs[0]?.city ?? '',
+    location: row.patient_addresses[0]?.city ?? '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -36,7 +35,7 @@ function rowToClient(row: ClientRow): Client {
 
 export class SupabaseClientRepository implements IClientRepository {
   async findById(id: string): Promise<Client | null> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('profiles')
       .select(CLIENT_SELECT)
       .eq('id', id)
@@ -44,55 +43,50 @@ export class SupabaseClientRepository implements IClientRepository {
       .is('deleted_at', null)
       .maybeSingle();
     if (!data) return null;
-    return rowToClient(data as ClientRow);
+    return rowToClient(data as unknown as ClientRow);
   }
 
   async findAll(): Promise<Client[]> {
-    const { data } = await supabase
+    const { data } = await getSupabase()
       .from('profiles')
       .select(CLIENT_SELECT)
       .eq('role', 'patient')
       .is('deleted_at', null);
     if (!data) return [];
-    return (data as ClientRow[]).map(rowToClient);
+    return (data as unknown as ClientRow[]).map(rowToClient);
   }
 
   async create(data: Omit<Client, 'id'>): Promise<Client> {
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    const sb = getSupabase();
+    const { data: authData, error: authError } = await sb.auth.admin.createUser({
       phone: data.whatsappNumber,
       phone_confirm: true,
     });
 
     let userId: string;
     if (authError) {
-      const { data: ppRows } = await supabase
+      const { data: ppRows } = await sb
         .from('profiles_private')
         .select('id')
         .eq('phone', data.whatsappNumber)
         .limit(1);
       const existing = ppRows?.[0];
-      if (!existing?.id) throw new Error(authError.message);
-      userId = existing.id;
+      if (!(existing as { id?: string } | undefined)?.id) throw new Error(authError.message);
+      userId = (existing as { id: string }).id;
     } else {
       userId = authData.user.id;
     }
 
     const [profileErr, privateErr] = await Promise.all([
-      supabase
-        .from('profiles')
-        .upsert({ id: userId, role: 'patient', full_name: data.name }, { onConflict: 'id' })
-        .then((r) => r.error),
-      supabase
-        .from('profiles_private')
-        .upsert({ id: userId, phone: data.whatsappNumber }, { onConflict: 'id' })
-        .then((r) => r.error),
+      sb.from('profiles').upsert({ id: userId, role: 'patient', full_name: data.name }, { onConflict: 'id' }).then((r) => r.error),
+      sb.from('profiles_private').upsert({ id: userId, phone: data.whatsappNumber }, { onConflict: 'id' }).then((r) => r.error),
     ]);
 
     if (profileErr) throw profileErr;
     if (privateErr) throw privateErr;
 
     if (data.location) {
-      await supabase.from('patient_addresses').insert({
+      await sb.from('patient_addresses').insert({
         patient_id: userId,
         label: 'WhatsApp',
         address_line: data.location,
@@ -107,18 +101,17 @@ export class SupabaseClientRepository implements IClientRepository {
   }
 
   async update(id: string, data: Partial<Client>): Promise<Client | null> {
+    const sb = getSupabase();
     const now = new Date().toISOString();
 
     if (data.name !== undefined) {
-      await supabase.from('profiles').update({ full_name: data.name, updated_at: now }).eq('id', id);
+      await sb.from('profiles').update({ full_name: data.name, updated_at: now }).eq('id', id);
     }
     if (data.whatsappNumber !== undefined) {
-      await supabase
-        .from('profiles_private')
-        .upsert({ id, phone: data.whatsappNumber }, { onConflict: 'id' });
+      await sb.from('profiles_private').upsert({ id, phone: data.whatsappNumber }, { onConflict: 'id' });
     }
     if (data.location !== undefined) {
-      const { data: existing } = await supabase
+      const { data: existing } = await sb
         .from('patient_addresses')
         .select('id')
         .eq('patient_id', id)
@@ -126,12 +119,11 @@ export class SupabaseClientRepository implements IClientRepository {
         .maybeSingle();
 
       if (existing) {
-        await supabase
-          .from('patient_addresses')
+        await sb.from('patient_addresses')
           .update({ address_line: data.location, city: data.location })
-          .eq('id', existing.id);
+          .eq('id', (existing as { id: string }).id);
       } else {
-        await supabase.from('patient_addresses').insert({
+        await sb.from('patient_addresses').insert({
           patient_id: id,
           label: 'WhatsApp',
           address_line: data.location,
@@ -145,7 +137,7 @@ export class SupabaseClientRepository implements IClientRepository {
   }
 
   async delete(id: string): Promise<boolean> {
-    const { error } = await supabase
+    const { error } = await getSupabase()
       .from('profiles')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', id);
@@ -153,12 +145,12 @@ export class SupabaseClientRepository implements IClientRepository {
   }
 
   async findByWhatsappNumber(number: string): Promise<Client | null> {
-    const { data: ppRows } = await supabase
+    const { data: ppRows } = await getSupabase()
       .from('profiles_private')
       .select('id')
       .eq('phone', number)
       .limit(1);
-    const id = ppRows?.[0]?.id;
+    const id = (ppRows?.[0] as { id?: string } | undefined)?.id;
     if (!id) return null;
     return this.findById(id);
   }
