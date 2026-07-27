@@ -40,33 +40,33 @@ router.post('/', async (req: Request, res: Response) => {
 async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; name: string } | null> {
   try {
     const sb = getSupabase();
-    // WhatsApp sends e.g. "27730899949". DB may store "+27730899949" or "0730899949".
-    const local = rawNumber.startsWith('27') ? `0${rawNumber.slice(2)}` : rawNumber;
-    const candidates = [rawNumber, `+${rawNumber}`, local];
+    // Match last 9 significant digits regardless of stored format
+    const significant = rawNumber.replace(/\D/g, '').slice(-9);
 
-    for (const phone of candidates) {
-      const { data: ppRow } = await sb
-        .from('profiles_private')
-        .select('id')
-        .eq('phone', phone)
-        .maybeSingle();
+    const { data: ppRow, error: ppErr } = await sb
+      .from('profiles_private')
+      .select('id, phone')
+      .like('phone', `%${significant}`)
+      .maybeSingle();
 
-      if (!ppRow) continue;
+    logger.info('Phone lookup', { significant, found: !!ppRow, storedPhone: (ppRow as { phone?: string } | null)?.phone ?? null, error: ppErr?.message ?? null });
 
-      const { data: profile } = await sb
-        .from('profiles')
-        .select('role, full_name')
-        .eq('id', (ppRow as { id: string }).id)
-        .is('deleted_at', null)
-        .maybeSingle();
+    if (!ppRow) return null;
 
-      if (!profile) continue;
-      const p = profile as { role: string; full_name: string };
-      return { role: p.role, name: p.full_name };
-    }
+    const { data: profile, error: profErr } = await sb
+      .from('profiles')
+      .select('role, full_name')
+      .eq('id', (ppRow as { id: string }).id)
+      .is('deleted_at', null)
+      .maybeSingle();
 
-    return null;
-  } catch {
+    if (profErr) logger.error('Profile lookup error', { error: profErr.message });
+    if (!profile) return null;
+
+    const p = profile as { role: string; full_name: string };
+    return { role: p.role, name: p.full_name };
+  } catch (err) {
+    logger.error('Phone lookup error', { err });
     return null;
   }
 }
