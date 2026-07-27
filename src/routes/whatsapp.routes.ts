@@ -3,6 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 import config from '../config';
 import logger from '../utils/logger';
 import { whatsappService } from '../services/whatsapp.service';
+import { getSupabase } from '../config/supabase';
 
 const router = Router();
 
@@ -36,6 +37,78 @@ router.post('/', async (req: Request, res: Response) => {
   res.sendStatus(StatusCodes.OK);
 });
 
+async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; name: string } | null> {
+  try {
+    const sb = getSupabase();
+    const candidates = [rawNumber, `+${rawNumber}`];
+
+    for (const phone of candidates) {
+      const { data: ppRow } = await sb
+        .from('profiles_private')
+        .select('id')
+        .eq('phone', phone)
+        .maybeSingle();
+
+      if (!ppRow) continue;
+
+      const { data: profile } = await sb
+        .from('profiles')
+        .select('role, full_name')
+        .eq('id', (ppRow as { id: string }).id)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (!profile) continue;
+      const p = profile as { role: string; full_name: string };
+      return { role: p.role, name: p.full_name };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendGreeting(from: string): Promise<void> {
+  const user = await lookupUserByPhone(from);
+  const firstName = user?.name.split(' ')[0] ?? '';
+
+  if (user?.role === 'caregiver') {
+    await whatsappService.sendInteractiveButtons({
+      to: from,
+      headerText: `Welcome back, ${firstName}! 👋`,
+      bodyText: 'What would you like to do today?',
+      buttons: [
+        { id: 'nurse_jobs', title: 'View Jobs' },
+        { id: 'nurse_profile', title: 'My Profile' },
+        { id: 'support', title: 'Support' },
+      ],
+    });
+  } else if (user?.role === 'patient') {
+    await whatsappService.sendInteractiveButtons({
+      to: from,
+      headerText: `Welcome back, ${firstName}! 👋`,
+      bodyText: 'How can we help you today?',
+      buttons: [
+        { id: 'client_request', title: 'Request a Nurse' },
+        { id: 'my_bookings', title: 'My Bookings' },
+        { id: 'support', title: 'Support' },
+      ],
+    });
+  } else {
+    await whatsappService.sendInteractiveButtons({
+      to: from,
+      headerText: 'Welcome to Nurse Center 👋',
+      bodyText: "Hello! I'm the Nurse Center assistant. How can I help you today?",
+      buttons: [
+        { id: 'nurse_signup', title: 'Register as Nurse' },
+        { id: 'client_request', title: 'Request a Nurse' },
+        { id: 'learn_more', title: 'Learn More' },
+      ],
+    });
+  }
+}
+
 async function handleIncoming(body: Record<string, unknown>): Promise<void> {
   try {
     const entry = (body.entry as { changes: { value: { messages?: { from: string; type: string; text?: { body: string }; id: string }[] } }[] }[] | undefined)?.[0];
@@ -51,16 +124,7 @@ async function handleIncoming(body: Record<string, unknown>): Promise<void> {
       logger.info('Incoming message', { from, text });
 
       if (GREETING_WORDS.some((w) => text.startsWith(w))) {
-        await whatsappService.sendInteractiveButtons({
-          to: from,
-          headerText: 'Welcome to Nurse Center 👋',
-          bodyText: 'Hello! I\'m the Nurse Center assistant. How can I help you today?',
-          buttons: [
-            { id: 'nurse_signup', title: 'Register as Nurse' },
-            { id: 'client_request', title: 'Request a Nurse' },
-            { id: 'learn_more', title: 'Learn More' },
-          ],
-        });
+        await sendGreeting(from);
       }
     }
   } catch (err) {
