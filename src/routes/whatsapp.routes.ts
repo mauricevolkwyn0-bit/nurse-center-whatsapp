@@ -24,7 +24,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // Meta sends incoming messages and status updates via POST
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
 
   if (body.object !== 'whatsapp_business_account') {
@@ -32,10 +32,8 @@ router.post('/', (req: Request, res: Response) => {
     return;
   }
 
-  // Acknowledge immediately — Meta requires a 200 within 20 seconds
+  await handleIncoming(body);
   res.sendStatus(StatusCodes.OK);
-
-  void handleIncoming(body);
 });
 
 async function handleIncoming(body: Record<string, unknown>): Promise<void> {
