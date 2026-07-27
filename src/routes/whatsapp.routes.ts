@@ -40,7 +40,9 @@ router.post('/', async (req: Request, res: Response) => {
 async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; name: string } | null> {
   try {
     const sb = getSupabase();
-    const candidates = [rawNumber, `+${rawNumber}`];
+    // WhatsApp sends e.g. "27730899949". DB may store "+27730899949" or "0730899949".
+    const local = rawNumber.startsWith('27') ? `0${rawNumber.slice(2)}` : rawNumber;
+    const candidates = [rawNumber, `+${rawNumber}`, local];
 
     for (const phone of candidates) {
       const { data: ppRow } = await sb
@@ -69,8 +71,7 @@ async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; nam
   }
 }
 
-async function sendGreeting(from: string): Promise<void> {
-  const user = await lookupUserByPhone(from);
+async function sendGreeting(from: string, user: { role: string; name: string } | null): Promise<void> {
   const firstName = user?.name.split(' ')[0] ?? '';
 
   if (user?.role === 'caregiver') {
@@ -124,7 +125,9 @@ async function handleIncoming(body: Record<string, unknown>): Promise<void> {
       logger.info('Incoming message', { from, text });
 
       if (GREETING_WORDS.some((w) => text.startsWith(w))) {
-        await sendGreeting(from);
+        const user = await lookupUserByPhone(from);
+        logger.info('User lookup', { from, found: !!user, role: user?.role ?? 'none' });
+        await sendGreeting(from, user);
       }
     }
   } catch (err) {
