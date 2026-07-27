@@ -40,31 +40,32 @@ router.post('/', async (req: Request, res: Response) => {
 async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; name: string } | null> {
   try {
     const sb = getSupabase();
-    // Match last 9 significant digits regardless of stored format
     const significant = rawNumber.replace(/\D/g, '').slice(-9);
 
-    const { data: ppRow, error: ppErr } = await sb
+    const { data: ppRows, error: ppErr } = await sb
       .from('profiles_private')
-      .select('id, phone')
-      .like('phone', `%${significant}`)
-      .maybeSingle();
+      .select('id')
+      .like('phone', `%${significant}`);
 
-    logger.info('Phone lookup', { significant, found: !!ppRow, storedPhone: (ppRow as { phone?: string } | null)?.phone ?? null, error: ppErr?.message ?? null });
+    logger.info('Phone lookup', { significant, matches: ppRows?.length ?? 0, error: ppErr?.message ?? null });
 
-    if (!ppRow) return null;
+    if (!ppRows?.length) return null;
 
-    const { data: profile, error: profErr } = await sb
-      .from('profiles')
-      .select('role, full_name')
-      .eq('id', (ppRow as { id: string }).id)
-      .is('deleted_at', null)
-      .maybeSingle();
+    for (const row of ppRows as { id: string }[]) {
+      const { data: profile } = await sb
+        .from('profiles')
+        .select('role, full_name')
+        .eq('id', row.id)
+        .is('deleted_at', null)
+        .in('role', ['caregiver', 'patient'])
+        .maybeSingle();
 
-    if (profErr) logger.error('Profile lookup error', { error: profErr.message });
-    if (!profile) return null;
+      if (!profile) continue;
+      const p = profile as { role: string; full_name: string };
+      return { role: p.role, name: p.full_name };
+    }
 
-    const p = profile as { role: string; full_name: string };
-    return { role: p.role, name: p.full_name };
+    return null;
   } catch (err) {
     logger.error('Phone lookup error', { err });
     return null;
