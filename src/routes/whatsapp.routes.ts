@@ -47,7 +47,7 @@ async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; nam
       .select('id')
       .like('phone', `%${significant}`);
 
-    logger.info('Phone lookup', { significant, matches: ppRows?.length ?? 0, error: ppErr?.message ?? null });
+    console.log('[NC] phone-lookup', JSON.stringify({ significant, matches: ppRows?.length ?? 0, error: ppErr?.message ?? null }));
 
     if (!ppRows?.length) return null;
 
@@ -58,7 +58,7 @@ async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; nam
         .eq('id', row.id)
         .maybeSingle();
 
-      logger.info('Profile row', { id: row.id, role: (profile as Record<string, unknown> | null)?.role ?? null, deleted_at: (profile as Record<string, unknown> | null)?.deleted_at ?? null, error: profErr?.message ?? null });
+      console.log('[NC] profile-row', JSON.stringify({ id: row.id, role: (profile as Record<string, unknown> | null)?.role ?? null, deleted_at: (profile as Record<string, unknown> | null)?.deleted_at ?? null, error: profErr?.message ?? null }));
 
       if (!profile) continue;
       const p = profile as { role: string; full_name: string; deleted_at: string | null };
