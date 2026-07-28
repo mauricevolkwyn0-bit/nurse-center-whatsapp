@@ -128,8 +128,17 @@ async function handleIncoming(body: Record<string, unknown>): Promise<void> {
       logger.info('Incoming message', { from, text });
 
       if (GREETING_WORDS.some((w) => text.startsWith(w))) {
+        const sig = from.replace(/\D/g, '').slice(-9);
+        const sb = getSupabase();
+        const { data: ppRows, error: ppErr } = await sb.from('profiles_private').select('id').like('phone', `%${sig}`);
+        const profileRows: Array<{ role: string | null; deleted: boolean }> = [];
+        for (const row of (ppRows ?? []) as { id: string }[]) {
+          const { data: prof } = await sb.from('profiles').select('role, deleted_at').eq('id', row.id).maybeSingle();
+          const p = prof as { role: string; deleted_at: string | null } | null;
+          if (p) profileRows.push({ role: p.role, deleted: !!p.deleted_at });
+        }
         const user = await lookupUserByPhone(from);
-        logger.info('User lookup', { from, found: !!user, role: user?.role ?? 'none' });
+        logger.info('Greeting debug', { from, sig, dbMatches: ppRows?.length ?? 0, dbError: ppErr?.message ?? null, profileRows, found: !!user, role: user?.role ?? 'none' });
         await sendGreeting(from, user);
       }
     }
