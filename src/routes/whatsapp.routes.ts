@@ -42,32 +42,33 @@ async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; nam
     const sb = getSupabase();
     const significant = rawNumber.replace(/\D/g, '').slice(-9);
 
-    const { data: ppRows, error: ppErr } = await sb
+    const { data: ppRows } = await sb
       .from('profiles_private')
       .select('id')
       .like('phone', `%${significant}`);
 
-    console.log('[NC] phone-lookup', JSON.stringify({ significant, matches: ppRows?.length ?? 0, error: ppErr?.message ?? null }));
-
     if (!ppRows?.length) return null;
 
+    let fallback: { role: string; name: string } | null = null;
+
     for (const row of ppRows as { id: string }[]) {
-      const { data: profile, error: profErr } = await sb
+      const { data: profile } = await sb
         .from('profiles')
         .select('role, full_name, deleted_at')
         .eq('id', row.id)
         .maybeSingle();
 
-      console.log('[NC] profile-row', JSON.stringify({ id: row.id, role: (profile as Record<string, unknown> | null)?.role ?? null, deleted_at: (profile as Record<string, unknown> | null)?.deleted_at ?? null, error: profErr?.message ?? null }));
-
       if (!profile) continue;
       const p = profile as { role: string; full_name: string; deleted_at: string | null };
       if (p.deleted_at) continue;
       if (p.role !== 'caregiver' && p.role !== 'patient') continue;
-      return { role: p.role, name: p.full_name };
+
+      // Prefer caregiver over patient when multiple profiles exist
+      if (p.role === 'caregiver') return { role: p.role, name: p.full_name };
+      if (!fallback) fallback = { role: p.role, name: p.full_name };
     }
 
-    return null;
+    return fallback;
   } catch (err) {
     logger.error('Phone lookup error', { err });
     return null;
@@ -113,9 +114,31 @@ async function sendGreeting(from: string, user: { role: string; name: string } |
   }
 }
 
+async function handleButtonReply(from: string, buttonId: string, user: { role: string; name: string } | null): Promise<void> {
+  switch (buttonId) {
+    case 'support':
+      await whatsappService.sendText({ to: from, body: 'For support, please contact us at support@nursecenter.co.za or call +27 75 524 6673.' });
+      break;
+    case 'learn_more':
+      await whatsappService.sendText({ to: from, body: 'Nurse Center connects patients with qualified nurses for home care. Visit nursecenter.co.za to learn more.' });
+      break;
+    default:
+      // Complex flows — coming soon
+      await whatsappService.sendText({ to: from, body: `Hi ${user?.name.split(' ')[0] ?? 'there'}, this feature is coming soon. Type "hi" to return to the main menu.` });
+  }
+}
+
+type IncomingMessage = {
+  from: string;
+  type: string;
+  text?: { body: string };
+  interactive?: { type: string; button_reply?: { id: string; title: string } };
+  id: string;
+};
+
 async function handleIncoming(body: Record<string, unknown>): Promise<void> {
   try {
-    const entry = (body.entry as { changes: { value: { messages?: { from: string; type: string; text?: { body: string }; id: string }[] } }[] }[] | undefined)?.[0];
+    const entry = (body.entry as { changes: { value: { messages?: IncomingMessage[] } }[] }[] | undefined)?.[0];
     const value = entry?.changes?.[0]?.value;
     const messages = value?.messages;
 
@@ -123,23 +146,20 @@ async function handleIncoming(body: Record<string, unknown>): Promise<void> {
 
     for (const msg of messages) {
       const from = msg.from;
-      const text = msg.type === 'text' ? msg.text?.body?.trim().toLowerCase() ?? '' : '';
 
-      logger.info('Incoming message', { from, text });
+      logger.info('Incoming message', { from, type: msg.type });
 
-      if (GREETING_WORDS.some((w) => text.startsWith(w))) {
-        const sig = from.replace(/\D/g, '').slice(-9);
-        const sb = getSupabase();
-        const { data: ppRows, error: ppErr } = await sb.from('profiles_private').select('id').like('phone', `%${sig}`);
-        const profileRows: Array<{ role: string | null; deleted: boolean }> = [];
-        for (const row of (ppRows ?? []) as { id: string }[]) {
-          const { data: prof } = await sb.from('profiles').select('role, deleted_at').eq('id', row.id).maybeSingle();
-          const p = prof as { role: string; deleted_at: string | null } | null;
-          if (p) profileRows.push({ role: p.role, deleted: !!p.deleted_at });
+      if (msg.type === 'text') {
+        const text = msg.text?.body?.trim().toLowerCase() ?? '';
+        if (GREETING_WORDS.some((w) => text.startsWith(w))) {
+          const user = await lookupUserByPhone(from);
+          await sendGreeting(from, user);
         }
+      } else if (msg.type === 'interactive' && msg.interactive?.button_reply) {
+        const buttonId = msg.interactive.button_reply.id;
         const user = await lookupUserByPhone(from);
-        logger.info('Greeting debug', { from, sig, dbMatches: ppRows?.length ?? 0, dbError: ppErr?.message ?? null, profileRows, found: !!user, role: user?.role ?? 'none' });
-        await sendGreeting(from, user);
+        logger.info('Button tap', { from, buttonId });
+        await handleButtonReply(from, buttonId, user);
       }
     }
   } catch (err) {
