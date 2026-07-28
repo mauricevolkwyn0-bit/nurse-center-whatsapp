@@ -52,16 +52,18 @@ async function lookupUserByPhone(rawNumber: string): Promise<{ role: string; nam
     if (!ppRows?.length) return null;
 
     for (const row of ppRows as { id: string }[]) {
-      const { data: profile } = await sb
+      const { data: profile, error: profErr } = await sb
         .from('profiles')
-        .select('role, full_name')
+        .select('role, full_name, deleted_at')
         .eq('id', row.id)
-        .is('deleted_at', null)
-        .in('role', ['caregiver', 'patient'])
         .maybeSingle();
 
+      logger.info('Profile row', { id: row.id, role: (profile as Record<string, unknown> | null)?.role ?? null, deleted_at: (profile as Record<string, unknown> | null)?.deleted_at ?? null, error: profErr?.message ?? null });
+
       if (!profile) continue;
-      const p = profile as { role: string; full_name: string };
+      const p = profile as { role: string; full_name: string; deleted_at: string | null };
+      if (p.deleted_at) continue;
+      if (p.role !== 'caregiver' && p.role !== 'patient') continue;
       return { role: p.role, name: p.full_name };
     }
 
